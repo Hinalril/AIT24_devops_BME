@@ -16,6 +16,8 @@ set -e
 if ! grep -Eq '^[[:space:]]*%wheel[[:space:]]+ALL' /etc/sudoers ; then
   sed -i 's/^[#[:space:]]*\(%wheel[[:space:]].*ALL\)/\1/' /etc/sudoers
   echo "[INFO] Разрешение sudo для группы wheel активировано."
+else
+  echo "[INFO] Разрешение sudo для группы wheel уже существует."
 fi
 
 # 0.2. создаём группу guest, если её нет
@@ -84,3 +86,26 @@ done
 [[ ${#guest_users[@]} -gt 0 ]]  && echo "guest-пользователи: ${guest_users[*]}"
 [[ ${#wheel_users[@]} -eq 0 && ${#guest_users[@]} -eq 0 ]] && \
   echo "Новые аккаунты не созданы."
+
+
+# ──────────────────────────────
+# 3. Статус: кто существует теперь (уже созданные и только что созданные пользователи)
+# ──────────────────────────────
+# Вывести список участников группы wheel
+
+groups=("wheel" "guest")
+
+for group in "${groups[@]}"; do
+  members=$(getent group "$group" | cut -d: -f4)
+
+  if [[ -z "$members" ]]; then
+    echo "Группа '$group' не имеет участников."
+  else
+    echo "Пользователи группы '$group':"я
+    IFS=',' read -ra arr <<< "$members"
+    for user in "${arr[@]}"; do
+      echo "  - $user"
+    done
+  fi
+  echo
+done
