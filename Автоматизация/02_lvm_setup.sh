@@ -108,7 +108,7 @@ snapshot_demo() {
 
   run "lvcreate -L ${SNAP_SIZE} -s -n rootsnap /dev/${VG}/${ROOT_LV}"
   run "mkdir -p /mnt/rootsnap"
-  run "mount -o ro /dev/${VG}/rootsnap /mnt/rootsnap"
+  run "mount -o ro,nouuid /dev/${VG}/rootsnap /mnt/rootsnap"
   done_ "Снапшот примонтирован в /mnt/rootsnap (только чтение)"
 
   msg "Создаю ${TMP_FILE_MB} МБ данных во /var/tmp для имитации изменений"
