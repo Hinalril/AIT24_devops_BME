@@ -82,8 +82,8 @@ done
 # ──────────────────────────────
 # 2. Итоговый отчёт: кто создан
 # ──────────────────────────────
-[[ ${#wheel_users[@]} -gt 0 ]] && echo "wheel-пользователи: ${wheel_users[*]}"
-[[ ${#guest_users[@]} -gt 0 ]]  && echo "guest-пользователи: ${guest_users[*]}"
+[[ ${#wheel_users[@]} -gt 0 ]] && echo "new wheel-пользователи: ${wheel_users[*]}"
+[[ ${#guest_users[@]} -gt 0 ]]  && echo "new guest-пользователи: ${guest_users[*]}"
 [[ ${#wheel_users[@]} -eq 0 && ${#guest_users[@]} -eq 0 ]] && \
   echo "Новые аккаунты не созданы."
 
@@ -91,8 +91,6 @@ done
 # ──────────────────────────────
 # 3. Статус: кто существует теперь (уже созданные и только что созданные пользователи)
 # ──────────────────────────────
-# Вывести список участников группы wheel
-
 groups=("wheel" "guest")
 
 for group in "${groups[@]}"; do
@@ -101,7 +99,7 @@ for group in "${groups[@]}"; do
   if [[ -z "$members" ]]; then
     echo "Группа '$group' не имеет участников."
   else
-    echo "Пользователи группы '$group':"я
+    echo "Пользователи группы '$group':"
     IFS=',' read -ra arr <<< "$members"
     for user in "${arr[@]}"; do
       echo "  - $user"
