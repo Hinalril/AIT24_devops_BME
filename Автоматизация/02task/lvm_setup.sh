@@ -18,7 +18,7 @@ PGLV_SIZE="8G"           # размер тома под PostgreSQL
 PG_MOUNT="/var/lib/pgsql"
 
 ROOT_LV="root"           # имя корневого LV внутри $VG
-ROOT_EXPAND="+2G"        # сколько добавить к корню
+ROOT_EXPAND="+1G"        # сколько добавить к корню
 
 SNAP_SIZE="1G"           # объём CoW-области снапшота
 TMP_FILE_MB=500          # сколько «мусора» писать для демонстрации (в МБ)
@@ -29,6 +29,10 @@ GREEN=$(tput setaf 2); YELLOW=$(tput setaf 3); RESET=$(tput sgr0)
 msg()   { printf "%b[INFO]%b %s\n"  "$YELLOW"  "$RESET" "$*"; }
 done_() { printf "%b[DONE]%b %s\n"  "$GREEN"   "$RESET" "$*"; }
 
+
+# ──────────────────────────────
+# Шаг 0. Требования запустить от root
+# ──────────────────────────────
 require_root() {
   [[ $(id -u) -eq 0 ]] || { echo "Запустите скрипт от root!"; exit 1; }
 }
