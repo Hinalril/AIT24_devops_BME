@@ -32,10 +32,13 @@ DB_USER="demo_user"
 DB_PASS="pass"
 
 # ──────────────────────────────
-# Шаг 2. Запускаем PostgreSQL
+# Шаг 2. Запускаем службу PostgreSQL
 # ──────────────────────────────
 echo "[1/4] Включаем и запускаем службу postgresql"
 systemctl enable --now postgresql
+
+# Перейдём в безопасный каталог, чтобы psql не жаловался на cwd
+cd /tmp
 
 # ──────────────────────────────
 # Шаг 3. Создаём базу и роль (идемпотентно)
@@ -64,10 +67,12 @@ sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${DB_US
 # ──────────────────────────────
 # Шаг 4. Скачиваем архив и распаковываем
 # ──────────────────────────────
-echo "[3/4] Скачиваем и распаковываем demo-дамп (${SIZE})"
+echo "[3/4] Скачиваем и распаковываем demo-дамп"
 curl -L "${ARCHIVE_URL}" -o "${ZIP}"
-SQL_FILE=$(unzip -q -o "${ZIP}" -d "${TMPDIR}" '*.sql' -x '__MACOSX/*' | awk -F': ' '/inflating:/ {print $2; exit}')
-[[ -f "$SQL_FILE" ]] || { echo "SQL-файл в архиве не найден"; exit 1; }
+unzip -o "${ZIP}" -d "${TMPDIR}"               # извлекаем всё, тихий режим не нужен
+SQL_FILE=$(find "${TMPDIR}" -type f -name '*.sql' | head -n1)
+
+[[ -f "${SQL_FILE}" ]] || { echo "Ошибка: SQL-файл не найден"; exit 1; }
 
 # ──────────────────────────────
 # Шаг 5.  Импорт дампа
