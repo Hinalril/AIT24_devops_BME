@@ -8,9 +8,16 @@
 
 set -e
 
+#──────────────────────────
+# Шаг 1. Файлы сервиса и таймера
+#──────────────────────────
 SERVICE_FILE="/etc/systemd/system/pg_lv_snapshot.service"
 TIMER_FILE="/etc/systemd/system/pg_lv_snapshot.timer"
 
+
+#──────────────────────────
+# Шаг 2. Допишем в конец SERVICE_FILE
+#──────────────────────────
 echo "→ Пишем $SERVICE_FILE"
 cat > "$SERVICE_FILE" <<'EOF'
 [Unit]
@@ -21,6 +28,9 @@ Type=oneshot
 ExecStart=AIT24_devops_BME/Автоматизация/02_snapshot_setup
 EOF
 
+#──────────────────────────
+# Шаг 3. Допишем в конец TIMER_FILE
+#──────────────────────────
 echo "→ Пишем $TIMER_FILE"
 cat > "$TIMER_FILE" <<'EOF'
 [Unit]
@@ -34,11 +44,14 @@ OnUnitActiveSec=1min
 WantedBy=timers.target
 EOF
 
-echo "→ Перезагружаем конфигурацию systemd"
+#──────────────────────────
+# Шаг 4. Перезапуск конфигурации и запуск таймера
+#──────────────────────────
+echo "Перезагружаем конфигурацию systemd"
 systemctl daemon-reload
 
-echo "→ Включаем и запускаем таймер"
+echo "Включаем и запускаем таймер"
 systemctl enable --now pg_lv_snapshot.timer
 
-echo "✓ Готово!  Проверьте расписание:"
+echo "Готово!  Проверьте расписание:"
 systemctl list-timers pg_lv_snapshot.timer
