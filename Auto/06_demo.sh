@@ -38,22 +38,28 @@ echo "[1/4] Включаем и запускаем службу postgresql"
 systemctl enable --now postgresql
 
 # ──────────────────────────────
-# Шаг 3. База и пользователь
+# Шаг 3. Создаём базу и роль (идемпотентно)
 # ──────────────────────────────
 echo "[2/4] Создаём (если нужно) базу и роль"
-sudo -u postgres psql -v ON_ERROR_STOP=1 <<SQL
-DO \$\$
-BEGIN
-  IF NOT EXISTS (SELECT FROM pg_database WHERE datname = '${DB_NAME}') THEN
-    PERFORM dblink_exec('dbname=postgres', 'CREATE DATABASE ${DB_NAME}');
-  END IF;
-  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '${DB_USER}') THEN
-    CREATE ROLE ${DB_USER} LOGIN PASSWORD '${DB_PASS}';
-  END IF;
-END
-\$\$;
-GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${DB_USER};
-SQL
+
+# проверяем наличие базы demo_db
+if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'" | grep -q 1; then
+  echo "→ создаю базу ${DB_NAME}"
+  sudo -u postgres psql -c "CREATE DATABASE ${DB_NAME};"
+else
+  echo "→ база ${DB_NAME} уже существует"
+fi
+
+# проверяем наличие роли demo_user
+if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='${DB_USER}'" | grep -q 1; then
+  echo "→ создаю роль ${DB_USER}"
+  sudo -u postgres psql -c "CREATE USER ${DB_USER} WITH PASSWORD '${DB_PASS}';"
+else
+  echo "→ роль ${DB_USER} уже существует"
+fi
+
+# выдаём все привилегии на базу
+sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${DB_USER};"
 
 # ──────────────────────────────
 # Шаг 4. Скачиваем архив и распаковываем
