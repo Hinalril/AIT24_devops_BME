@@ -2,10 +2,6 @@
 #
 # 06_demo_new_user.sh – добавление новых пользователей в PostgreSQL и настройка прав доступа для него
 #
-# 1.
-# 2.
-# 3.
-#
 # Запускать от root:  sudo ./06_demo_new_user.sh
 
 set -e
@@ -29,14 +25,17 @@ SCHEMA_NAME=${SCHEMA_NAME:-bookings}
 
 # набор прав по умолчанию: SELECT, INSERT, UPDATE, DELETE
 DEFAULT_PRIVS="SELECT,INSERT,UPDATE,DELETE"
-
-read -rp "Список привилегий для таблиц/SEQ (ENTER = ${DEFAULT_PRIVS}): " PRIVS
+read -rp "Список привилегий для таблиц (ENTER = ${DEFAULT_PRIVS}): " PRIVS
 PRIVS=${PRIVS:-$DEFAULT_PRIVS}
+
+# для последовательностей допустим только эти права
+SEQ_PRIVS="SELECT,UPDATE,USAGE"
 
 echo
 echo "Работаем с базой:      $DB_NAME"
 echo "Схема:                 $SCHEMA_NAME"
-echo "Привилегии:            $PRIVS"
+echo "Привилегии TABLES:     $PRIVS"
+echo "Привилегии SEQUENCES:  $SEQ_PRIVS"
 echo
 
 # ──────────────────────────────
@@ -65,13 +64,13 @@ while true; do
     echo "→ Выдаю права на схему и объекты"
     psql -U postgres -d "$DB_NAME" <<-EOSQL
       GRANT USAGE,CREATE ON SCHEMA ${SCHEMA_NAME} TO ${DB_USER};
-      GRANT ${PRIVS} ON ALL TABLES     IN SCHEMA ${SCHEMA_NAME} TO ${DB_USER};
-      GRANT ${PRIVS} ON ALL SEQUENCES  IN SCHEMA ${SCHEMA_NAME} TO ${DB_USER};
+      GRANT ${PRIVS}     ON ALL TABLES     IN SCHEMA ${SCHEMA_NAME} TO ${DB_USER};
+      GRANT ${SEQ_PRIVS} ON ALL SEQUENCES  IN SCHEMA ${SCHEMA_NAME} TO ${DB_USER};
       -- будущие объекты
       ALTER DEFAULT PRIVILEGES IN SCHEMA ${SCHEMA_NAME}
-        GRANT ${PRIVS} ON TABLES    TO ${DB_USER};
+        GRANT ${PRIVS}     ON TABLES    TO ${DB_USER};
       ALTER DEFAULT PRIVILEGES IN SCHEMA ${SCHEMA_NAME}
-        GRANT ${PRIVS} ON SEQUENCES TO ${DB_USER};
+        GRANT ${SEQ_PRIVS} ON SEQUENCES TO ${DB_USER};
 EOSQL
   else
     echo "→ Права для '${DB_USER}' уже выдавались — пропускаю GRANT."
