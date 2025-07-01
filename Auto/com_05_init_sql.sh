@@ -24,37 +24,22 @@ PG_VERSION="15"                                # версия PostgreSQL
 PG_USER="postgres"                             # системный пользователь
                                                # имя, под которым работает служба PostgreSQL
 PG_DATA="/var/lib/pgsql/${PG_VERSION}/data"    # каталог кластера, где PostgreSQL хранит данные
+PG_BIN="/usr/pgsql-${PG_VERSION}/bin"          # путь к бинарным файлам PostgreSQL
+PG_SERVICE="postgresql-${PG_VERSION}"          # имя systemd-службы, под которой управляется сервер
+
 PG_DELETE_BACKUP=7                             # удалить бэкапы старше N дней
 
-
 # ──────────────────────────────
-# Шаг 2. Поиск initdb и имени службы
+# Шаг 2. Проверка наличия необходимых bin файлов
 # ──────────────────────────────
-if command -v initdb &>/dev/null; then
-  PG_BIN_DIR="$(dirname "$(command -v initdb)")"
-else
-  # пробуем типичный путь PGDG
-  PG_BIN_DIR="/usr/pgsql-${PG_VERSION}/bin"
-  [[ -x "${PG_BIN_DIR}/initdb" ]] \
-    || { echo "initdb не найден. Установите пакет postgresql${PG_VERSION}-server."; exit 1; }
-fi
-
-if systemctl list-unit-files | grep -q "^postgresql-${PG_VERSION}.service"; then
-  PG_SERVICE="postgresql-${PG_VERSION}"
-elif systemctl list-unit-files | grep -q "^postgresql.service"; then
-  PG_SERVICE="postgresql"
-else
-  echo "systemd-служба PostgreSQL не найдена. Убедитесь, что серверный пакет установлен."
-  exit 1
-fi
-
-echo "[1/5] initdb найден: ${PG_BIN_DIR}/initdb"
-echo "[1/5] Служба PostgreSQL: ${PG_SERVICE}"
+echo "[1/4] Проверка существования initdb..."
+command -v "${PG_BIN}/initdb" >/dev/null || {
+  echo "initdb не найден — убедитесь, что PostgreSQL ${PG_VERSION} установлен."; exit 1; }
 
 # ──────────────────────────────
 # Шаг 3. Инициализация кластера (с контрольными суммами)
 # ──────────────────────────────
-echo "[2/5] Инициализация кластера (с контрольными суммами)..."
+echo "[2/4] Инициализация кластера (с контрольными суммами)..."
 if [[ -d "${PG_DATA}" && -f "${PG_DATA}/PG_VERSION" ]]; then
   echo "Кластер уже существует, initdb пропущен."
 else
