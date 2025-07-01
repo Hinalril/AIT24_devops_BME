@@ -74,8 +74,14 @@ chmod -R 750 "${TMPDIR}"
 # ──────────────────────────────
 echo "[4/4] Импортируем данные в ${DB_NAME}"
 
-#  убираем из дампа строки CREATE DATABASE / \connect demo
-sed -e '/^CREATE DATABASE/d' -e '/^\\connect demo/d' "${SQL_FILE}" \
-  | sudo -u postgres psql -d "${DB_NAME}"
+# удаляем все упоминания базы demo (CREATE|DROP|ALTER|COMMENT) и \connect
+sed -e '/^CREATE DATABASE/d' \
+    -e '/^DROP DATABASE/d'   \
+    -e '/^ALTER DATABASE/d'  \
+    -e '/^COMMENT ON DATABASE/d' \
+    -e '/^\\connect demo/d'  \
+    "${SQL_FILE}" | sudo -u postgres psql -d "${DB_NAME}"
 
 echo "Готово: «${DB_NAME}» наполнена, роль «${DB_USER}» имеет доступ."
+
+rm -rf "${TMPDIR}"
