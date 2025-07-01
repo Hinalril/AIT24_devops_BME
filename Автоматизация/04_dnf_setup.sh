@@ -15,13 +15,7 @@ require_root() {
 # ──────────────────────────────
 # Шаг 1. Подключаем дополнительные репозитории (если ещё не включены)
 # ──────────────────────────────
-# CodeReady Builder – пакет screen
-if ! dnf repolist enabled ol8_codeready_builder >/dev/null 2>&1; then
-    echo "==> Включаем репозиторий CodeReadyBuilder…"
-    dnf -y config-manager --set-enabled ol8_codeready_builder
-fi
-
-# EPEL 8 – пакет pwgen
+# EPEL 8 – пакет для screen и pwgen
 if ! rpm -q oracle-epel-release-el8 >/dev/null 2>&1; then
     echo "==> Устанавливаем метапакет oracle-epel-release-el8 (EPEL 8)…"
     dnf -y install oracle-epel-release-el8
