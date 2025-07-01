@@ -33,7 +33,7 @@ dnf makecache -y
 # ──────────────────────────────
 # Шаг 2. Определяем группы пакетов
 # ──────────────────────────────
-editors=(vim nano mc screen)
+editors=(vim-enhanced nano mc screen)
 
 network=(wget curl telnet nmap-ncat tcpdump net-tools bind-utils)
 
