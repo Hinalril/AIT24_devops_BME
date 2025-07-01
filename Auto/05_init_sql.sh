@@ -31,11 +31,11 @@ PG_DELETE_BACKUP=7                             # удалить бэкапы с�
 # Шаг 2. Поиск initdb и имени службы
 # ──────────────────────────────
 if command -v initdb &>/dev/null; then
-  PG_BIN_DIR="$(dirname "$(command -v initdb)")"
+  PG_BIN="$(dirname "$(command -v initdb)")"
 else
   # пробуем типичный путь PGDG
-  PG_BIN_DIR="/usr/pgsql-${PG_VERSION}/bin"
-  [[ -x "${PG_BIN_DIR}/initdb" ]] \
+  PG_BIN="/usr/pgsql-${PG_VERSION}/bin"
+  [[ -x "${PG_BIN}/initdb" ]] \
     || { echo "initdb не найден. Установите пакет postgresql${PG_VERSION}-server."; exit 1; }
 fi
 
@@ -48,7 +48,7 @@ else
   exit 1
 fi
 
-echo "[1/5] initdb найден: ${PG_BIN_DIR}/initdb"
+echo "[1/5] initdb найден: ${PG_BIN}/initdb"
 echo "[1/5] Служба PostgreSQL: ${PG_SERVICE}"
 
 # ──────────────────────────────
