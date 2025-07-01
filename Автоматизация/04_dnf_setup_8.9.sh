@@ -43,9 +43,16 @@ all_pkgs=(
 echo "==> Устанавливаем базовые утилиты (${#all_pkgs[@]} пакетов)…"
 dnf install -y "${all_pkgs[@]}"
 
+# ──────────────────────────────
+# Шаг 3. Устанавливаем базовые утилиты (если что-то в массиве не найдено, установка данного массива нарушается)
+# ──────────────────────────────
+#sudo dnf -y install \
+#  vim wget telnet mc nmap-ncat tcpdump autofs nfs-utils \
+#  curl pwgen cloud-utils-growpart net-tools lsof bind-utils \
+#  sysstat unzip bc sg3_utils sysfsutils nano git glibc-langpack-ru screen
 
 # ──────────────────────────────
-# Шаг 3. Устанавливаем PostgreSQL 15
+# Шаг 4. Устанавливаем PostgreSQL 15
 # ──────────────────────────────
 echo "==> Переключаемся на модуль PostgreSQL 15 и ставим сервер+клиент…"
 dnf module reset  -y postgresql
@@ -53,7 +60,7 @@ dnf module enable -y postgresql:15
 dnf install       -y postgresql-server postgresql
 
 # ──────────────────────────────
-# Шаг 4. Итоговый отчёт
+# Шаг 5. Итоговый отчёт
 # ──────────────────────────────
 echo -e "\n===== Итоговая сводка ====="
 echo "Редакторы и управление сессиями:"
