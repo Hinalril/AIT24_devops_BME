@@ -74,6 +74,10 @@ SQL_FILE=$(find "${TMPDIR}" -type f -name '*.sql' | head -n1)
 
 [[ -f "${SQL_FILE}" ]] || { echo "Ошибка: SQL-файл не найден"; exit 1; }
 
+# Делаем файл читаемым для пользователя postgres
+sudo chown postgres:postgres "${SQL_FILE}"
+sudo chmod 640 "${SQL_FILE}"
+
 # ──────────────────────────────
 # Шаг 5.  Импорт дампа
 # ──────────────────────────────
