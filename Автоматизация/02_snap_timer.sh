@@ -25,7 +25,7 @@ Description=Create LVM snapshot of /dev/ol/pglv
 
 [Service]
 Type=oneshot
-ExecStart=AIT24_devops_BME/Автоматизация/02_snapshot_setup
+ExecStart=AIT24_devops_BME/Автоматизация/02_snapshot_setup.sh
 EOF
 
 #──────────────────────────
