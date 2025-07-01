@@ -23,7 +23,7 @@ fi
 PG_VERSION="15"                                # версия PostgreSQL
 PG_USER="postgres"                             # системный пользователь
                                                # имя, под которым работает служба PostgreSQL
-PG_DATA="/var/lib/pgsql/${PG_VERSION}/data"    # каталог кластера, где PostgreSQL хранит данные
+PG_DATA="/var/lib/pgsql/data"    # каталог кластера, где PostgreSQL хранит данные
 PG_DELETE_BACKUP=7                             # удалить бэкапы старше N дней
 
 
