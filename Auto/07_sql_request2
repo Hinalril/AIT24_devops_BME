@@ -1,0 +1,20 @@
+SELECT DISTINCT
+  ac.model,
+  (
+    SELECT COUNT(s.seat_no)
+    FROM aircrafts ac2
+    JOIN seats s
+      ON ac2.aircraft_code = s.aircraft_code
+    WHERE ac2.aircraft_code = ac.aircraft_code
+      AND s.fare_conditions = 'Business'
+  ) AS business_seat_count
+FROM aircrafts ac
+ORDER BY
+  (
+    SELECT COUNT(s.seat_no)
+    FROM aircrafts ac2
+    JOIN seats s
+      ON ac2.aircraft_code = s.aircraft_code
+    WHERE ac2.aircraft_code = ac.aircraft_code
+      AND s.fare_conditions = 'Business'
+  ) DESC;

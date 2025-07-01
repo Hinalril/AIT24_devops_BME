@@ -56,7 +56,7 @@ fi
 sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${DB_USER};"
 
 # ──────────────────────────────
-# 4. скачиваем и распаковываем
+# 4. скачиваем Demo-базы и распаковываем
 # ──────────────────────────────
 echo "[3/4] Скачиваем и распаковываем demo-дамп"
 curl -L "${ARCHIVE_URL}" -o "${ZIP_FILE}"
@@ -70,7 +70,7 @@ chown -R postgres:postgres "${TMPDIR}"
 chmod -R 750 "${TMPDIR}"
 
 # ──────────────────────────────
-# 5. импорт в demo_db
+# 5. импорт в demo_db (импорт через SQL-дамп)
 # ──────────────────────────────
 echo "[4/4] Импортируем данные в ${DB_NAME}"
 

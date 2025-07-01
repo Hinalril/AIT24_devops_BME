@@ -1,0 +1,17 @@
+SELECT
+    ap.city,
+    ap.airport_name,
+    ap.airport_code,
+    COUNT(f.flight_id) AS flights_count
+FROM
+    airports ap
+LEFT OUTER JOIN
+    flights f
+  ON ap.airport_code = f.departure_airport
+WHERE
+    DATE_PART('month', f.scheduled_departure) = 7
+    AND ap.city = 'Москва'
+GROUP BY
+    ap.city,
+    ap.airport_name,
+    ap.airport_code;
