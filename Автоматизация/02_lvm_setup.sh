@@ -12,7 +12,7 @@ set -e
 # НАСТРОЙКИ (редактируйте)
 #──────────────────────────
 DISK="/dev/sdb"          # дополнительный диск под PostgreSQL
-VG="ol_vbox"                  # существующая Volume Group (root расположена здесь)
+VG="ol"                  # существующая Volume Group (root расположена здесь)
 PGLV_NAME="pglv"         # имя логического тома под /var/lib/pgsql
 PGLV_SIZE="8G"           # размер тома под PostgreSQL
 PG_MOUNT="/var/lib/pgsql"
