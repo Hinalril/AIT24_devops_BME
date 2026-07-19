@@ -1,0 +1,206 @@
+---
+
+- name: Configure primary PostgreSQL storage
+  hosts: postgresql
+  become: true
+  gather_facts: false
+
+  vars:
+    postgres_partition: "{{ storage_disk }}-part1"
+    system_extend_partition: "{{ storage_disk }}-part2"
+
+  pre_tasks:
+    - name: Validate required storage variables
+      ansible.builtin.assert:
+        that:
+          - storage_disk is defined
+          - storage_vg is defined
+          - storage_lv is defined
+          - storage_lv_size is defined
+          - storage_mount is defined
+          - storage_fstype is defined
+          - storage_mount_options is defined
+          - system_vg is defined
+          - system_root_lv is defined
+          - storage_first_partition_end is defined
+        fail_msg: >-
+          Required storage variables are missing for
+          {{ inventory_hostname }}.
+
+    - name: Install LVM and filesystem utilities
+      ansible.builtin.command:
+        argv:
+          - dnf
+          - install
+          - -y
+          - parted
+          - lvm2
+          - xfsprogs
+      register: storage_packages
+      changed_when: "'Nothing to do' not in storage_packages.stdout"
+
+    - name: Check additional disk
+      ansible.builtin.stat:
+        path: "{{ storage_disk }}"
+      register: storage_disk_stat
+
+    - name: Read device types from additional disk
+      ansible.builtin.command:
+        argv:
+          - lsblk
+          - -nro
+          - TYPE
+          - "{{ storage_disk }}"
+      register: storage_disk_types
+      changed_when: false
+
+    - name: Read mount points from additional disk
+      ansible.builtin.command:
+        argv:
+          - lsblk
+          - -nro
+          - MOUNTPOINT
+          - "{{ storage_disk }}"
+      register: storage_disk_mounts
+      changed_when: false
+
+    - name: Verify additional disk
+      ansible.builtin.assert:
+        that:
+          - storage_disk_stat.stat.exists
+          - "'disk' in storage_disk_types.stdout_lines"
+          - "'/boot' not in storage_disk_mounts.stdout_lines"
+          - "'/boot/efi' not in storage_disk_mounts.stdout_lines"
+          - "'[SWAP]' not in storage_disk_mounts.stdout_lines"
+        fail_msg: >-
+          {{ storage_disk }} is missing or contains system boot
+          filesystems. LVM configuration has been stopped.
+
+  tasks:
+    - name: Create partition for PostgreSQL
+      community.general.parted:
+        device: "{{ storage_disk }}"
+        label: gpt
+        number: 1
+        name: pgdata
+        part_start: 1MiB
+        part_end: "{{ storage_first_partition_end }}"
+        flags:
+          - lvm
+        state: present
+
+    - name: Create partition for extending system VG
+      community.general.parted:
+        device: "{{ storage_disk }}"
+        label: gpt
+        number: 2
+        name: root_extend
+        part_start: "{{ storage_first_partition_end }}"
+        part_end: 100%
+        flags:
+          - lvm
+        state: present
+
+    - name: Wait for udev
+      ansible.builtin.command:
+        argv:
+          - udevadm
+          - settle
+      changed_when: false
+
+    - name: Wait for partition devices
+      ansible.builtin.wait_for:
+        path: "{{ item }}"
+        timeout: 30
+      loop:
+        - "{{ postgres_partition }}"
+        - "{{ system_extend_partition }}"
+
+    - name: Add second partition to system VG
+      community.general.lvg:
+        vg: "{{ system_vg }}"
+        pvs: "{{ system_extend_partition }}"
+        remove_extra_pvs: false
+        state: present
+
+    - name: Extend root logical volume
+      community.general.lvol:
+        vg: "{{ system_vg }}"
+        lv: "{{ system_root_lv }}"
+        size: +100%FREE
+        resizefs: true
+        shrink: false
+        state: present
+
+    - name: Create PostgreSQL volume group
+      community.general.lvg:
+        vg: "{{ storage_vg }}"
+        pvs: "{{ postgres_partition }}"
+        remove_extra_pvs: false
+        state: present
+
+    - name: Create PostgreSQL logical volume
+      community.general.lvol:
+        vg: "{{ storage_vg }}"
+        lv: "{{ storage_lv }}"
+        size: "{{ storage_lv_size }}"
+        shrink: false
+        state: present
+
+    - name: Create PostgreSQL filesystem
+      community.general.filesystem:
+        dev: "/dev/{{ storage_vg }}/{{ storage_lv }}"
+        fstype: "{{ storage_fstype }}"
+
+    - name: Create PostgreSQL mount point
+      ansible.builtin.file:
+        path: "{{ storage_mount }}"
+        state: directory
+
+    - name: Mount PostgreSQL logical volume
+      ansible.posix.mount:
+        src: "/dev/{{ storage_vg }}/{{ storage_lv }}"
+        path: "{{ storage_mount }}"
+        fstype: "{{ storage_fstype }}"
+        opts: "{{ storage_mount_options }}"
+        state: mounted
+
+  post_tasks:
+    - name: Display block device layout
+      ansible.builtin.command:
+        argv:
+          - lsblk
+          - -o
+          - NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT
+      register: block_layout
+      changed_when: false
+
+    - name: Display volume groups
+      ansible.builtin.command:
+        argv:
+          - vgs
+      register: volume_groups
+      changed_when: false
+
+    - name: Display logical volumes
+      ansible.builtin.command:
+        argv:
+          - lvs
+      register: logical_volumes
+      changed_when: false
+
+    - name: Display PostgreSQL mount
+      ansible.builtin.command:
+        argv:
+          - findmnt
+          - "{{ storage_mount }}"
+      register: postgres_mount_result
+      changed_when: false
+
+    - name: Show verification results
+      ansible.builtin.debug:
+        msg:
+          - "{{ block_layout.stdout_lines }}"
+          - "{{ volume_groups.stdout_lines }}"
+          - "{{ logical_volumes.stdout_lines }}"
+          - "{{ postgres_mount_result.stdout_lines }}"

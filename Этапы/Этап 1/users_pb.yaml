@@ -1,0 +1,39 @@
+---
+
+- name: Configure operating system users
+  hosts: postgresql
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Validate user variables
+      ansible.builtin.assert:
+        that:
+          - dba_user is defined
+          - dba_public_key_file is defined
+        fail_msg: DBA user variables are missing.
+
+    - name: Create DBA user
+      ansible.builtin.user:
+        name: "{{ dba_user }}"
+        groups:
+          - wheel
+        append: true
+        shell: /bin/bash
+        create_home: true
+        state: present
+
+    - name: Add SSH key for DBA user
+      ansible.posix.authorized_key:
+        user: "{{ dba_user }}"
+        key: "{{ lookup('ansible.builtin.file', dba_public_key_file) }}"
+        state: present
+
+    - name: Configure sudo for DBA user
+      ansible.builtin.copy:
+        dest: "/etc/sudoers.d/{{ dba_user }}"
+        content: "{{ dba_user }} ALL=(ALL) ALL\n"
+        owner: root
+        group: root
+        mode: "0440"
+        validate: "/usr/sbin/visudo -cf %s"

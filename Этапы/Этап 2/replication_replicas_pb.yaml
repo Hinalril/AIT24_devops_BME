@@ -1,0 +1,251 @@
+---
+
+- name: Create PostgreSQL physical replicas
+  hosts: postgresql_replicas
+  become: true
+  gather_facts: false
+  serial: 1
+
+  vars_files:
+  - ../vars/vault.yaml
+
+  vars:
+    primary_ip: >-
+      {{ hostvars[postgresql_primary_host].ansible_host }}
+    replication_passfile: "{{ storage_mount }}/.pgpass"
+    primary_connection_string: >-
+      host={{ primary_ip }}
+      port={{ postgresql_port }}
+      user={{ replication_user }}
+      application_name={{ replication_application_name }}
+      passfile={{ replication_passfile }}
+    firewall_rule: >-
+      rule family="ipv4"
+      source address="{{ lab_network }}"
+      port port="{{ postgresql_port }}" protocol="tcp" accept
+
+  tasks:
+    - name: Validate replica variables
+      ansible.builtin.assert:
+        that:
+          - postgresql_primary_host is defined
+          - replication_user is defined
+          - replication_slot is defined
+          - replication_application_name is defined
+          - replication_mode is defined
+          - postgresql_data_dir is defined
+          - postgresql_bin_dir is defined
+          - postgresql_service_name is defined
+          - vault_replication_password is defined
+        fail_msg: >-
+          Required replica variables are missing for
+          {{ inventory_hostname }}.
+
+    - name: Check replica initialization
+      ansible.builtin.stat:
+        path: "{{ postgresql_data_dir }}/PG_VERSION"
+      register: replica_initialized
+
+    - name: Ensure replica data directory exists
+      ansible.builtin.file:
+        path: "{{ postgresql_data_dir }}"
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: "0700"
+
+    - name: Inspect replica data directory
+      ansible.builtin.command:
+        argv:
+          - find
+          - "{{ postgresql_data_dir }}"
+          - -mindepth
+          - "1"
+          - -maxdepth
+          - "1"
+          - -print
+          - -quit
+      register: replica_data_contents
+      changed_when: false
+
+    - name: Verify that uninitialized data directory is empty
+      ansible.builtin.assert:
+        that:
+          - >-
+            replica_initialized.stat.exists or
+            replica_data_contents.stdout | trim == ""
+        fail_msg: >-
+          {{ postgresql_data_dir }} is not initialized but
+          contains files. Base backup has been stopped.
+
+    - name: Stop PostgreSQL before initial base backup
+      ansible.builtin.service:
+        name: "{{ postgresql_service_name }}"
+        state: stopped
+      when: not replica_initialized.stat.exists
+
+    - name: Create replication password file
+      ansible.builtin.copy:
+        dest: "{{ replication_passfile }}"
+        content: >-
+          {{ primary_ip }}:{{ postgresql_port }}:*:{{ replication_user }}:{{ vault_replication_password }}
+        owner: postgres
+        group: postgres
+        mode: "0600"
+      no_log: true
+
+    - name: Create base backup from primary
+      ansible.builtin.command:
+        argv:
+          - "{{ postgresql_bin_dir }}/pg_basebackup"
+          - "--dbname={{ primary_connection_string }}"
+          - "--pgdata={{ postgresql_data_dir }}"
+          - --format=plain
+          - --wal-method=stream
+          - "--slot={{ replication_slot }}"
+          - --write-recovery-conf
+          - --checkpoint=fast
+          - --progress
+          - --no-password
+        creates: "{{ postgresql_data_dir }}/PG_VERSION"
+      become_user: postgres
+      register: basebackup_result
+
+    - name: Restore SELinux contexts
+      ansible.builtin.command:
+        argv:
+          - restorecon
+          - -RF
+          - "{{ storage_mount }}"
+      changed_when: false
+
+    - name: Enable and start firewalld
+      ansible.builtin.service:
+        name: firewalld
+        enabled: true
+        state: started
+
+    - name: Allow PostgreSQL through firewall
+      ansible.builtin.command:
+        argv:
+          - firewall-cmd
+          - --permanent
+          - "--add-rich-rule={{ firewall_rule }}"
+      register: firewall_result
+      changed_when: >-
+        'ALREADY_ENABLED' not in
+        (firewall_result.stdout + firewall_result.stderr)
+      notify: Reload firewalld
+
+    - name: Apply firewall configuration
+      ansible.builtin.meta: flush_handlers
+
+    - name: Enable and start PostgreSQL replica
+      ansible.builtin.service:
+        name: "{{ postgresql_service_name }}"
+        enabled: true
+        state: started
+
+    - name: Wait for PostgreSQL replica
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ postgresql_port }}"
+        timeout: 60
+
+    - name: Check recovery mode
+      ansible.builtin.command:
+        argv:
+          - "{{ postgresql_bin_dir }}/psql"
+          - -tAc
+          - SELECT pg_is_in_recovery();
+      become_user: postgres
+      register: recovery_status
+      changed_when: false
+
+    - name: Verify recovery mode
+      ansible.builtin.assert:
+        that:
+          - recovery_status.stdout | trim == "t"
+        fail_msg: >-
+          {{ inventory_hostname }} is not running as a standby.
+        success_msg: >-
+          {{ inventory_hostname }} is running as a standby.
+
+    - name: Show replica result
+      ansible.builtin.debug:
+        msg:
+          - "Host: {{ inventory_hostname }}"
+          - "Mode requested: {{ replication_mode }}"
+          - "Slot: {{ replication_slot }}"
+          - "Recovery: {{ recovery_status.stdout | trim }}"
+
+  handlers:
+    - name: Reload firewalld
+      ansible.builtin.command:
+        argv:
+          - firewall-cmd
+          - --reload
+
+
+- name: Verify streaming replication on primary
+  hosts: postgresql
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Count streaming replicas
+      ansible.builtin.command:
+        argv:
+          - "{{ postgresql_bin_dir }}/psql"
+          - -tAc
+          - >-
+            SELECT count(*)
+            FROM pg_stat_replication
+            WHERE state = 'streaming';
+      become_user: postgres
+      register: streaming_replica_count
+      changed_when: false
+
+    - name: Verify number of streaming replicas
+      ansible.builtin.assert:
+        that:
+          - streaming_replica_count.stdout | trim | int == 2
+        fail_msg: >-
+          Expected two streaming replicas, but found
+          {{ streaming_replica_count.stdout | trim }}.
+        success_msg: Two streaming replicas are connected.
+
+    - name: Read streaming replication state
+      ansible.builtin.command:
+        argv:
+          - "{{ postgresql_bin_dir }}/psql"
+          - -tAc
+          - >-
+            SELECT application_name || ':' ||
+                   client_addr || ':' ||
+                   state || ':' ||
+                   sync_state
+            FROM pg_stat_replication
+            ORDER BY application_name;
+      become_user: postgres
+      register: streaming_state
+      changed_when: false
+
+    - name: Read replication slot state
+      ansible.builtin.command:
+        argv:
+          - "{{ postgresql_bin_dir }}/psql"
+          - -tAc
+          - >-
+            SELECT slot_name || ':' || active
+            FROM pg_replication_slots
+            ORDER BY slot_name;
+      become_user: postgres
+      register: slot_state
+      changed_when: false
+
+    - name: Show streaming replication state
+      ansible.builtin.debug:
+        msg:
+          - "{{ streaming_state.stdout_lines }}"
+          - "{{ slot_state.stdout_lines }}"

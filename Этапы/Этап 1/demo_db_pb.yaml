@@ -1,0 +1,123 @@
+---
+
+- name: Configure demo database and user
+  hosts: postgresql
+  become: true
+  gather_facts: false
+
+  vars_files:
+    - ../vars/vault.yaml
+
+  vars:
+    demo_database: demo
+    demo_user: demo_user
+
+  tasks:
+    - name: Check demo role
+      ansible.builtin.command:
+        argv:
+          - "{{ postgresql_bin_dir }}/psql"
+          - -d
+          - postgres
+          - -Atc
+          - >-
+            SELECT 1 FROM pg_roles
+            WHERE rolname='{{ demo_user }}';
+      become_user: postgres
+      register: demo_role
+      changed_when: false
+
+    - name: Create demo role
+      ansible.builtin.command:
+        argv:
+          - "{{ postgresql_bin_dir }}/psql"
+          - -d
+          - postgres
+          - -v
+          - ON_ERROR_STOP=1
+        stdin: |
+          \getenv role_password DEMO_ROLE_PASSWORD
+          CREATE ROLE {{ demo_user }}
+          LOGIN PASSWORD :'role_password';
+      environment:
+        DEMO_ROLE_PASSWORD: "{{ vault_demo_user_password }}"
+      become_user: postgres
+      no_log: true
+      when: demo_role.stdout | trim != "1"
+
+    - name: Check demo database
+      ansible.builtin.command:
+        argv:
+          - "{{ postgresql_bin_dir }}/psql"
+          - -d
+          - postgres
+          - -Atc
+          - >-
+            SELECT 1 FROM pg_database
+            WHERE datname='{{ demo_database }}';
+      become_user: postgres
+      register: demo_db
+      changed_when: false
+
+    - name: Create demo database
+      ansible.builtin.command:
+        argv:
+          - "{{ postgresql_bin_dir }}/createdb"
+          - "--owner={{ demo_user }}"
+          - "{{ demo_database }}"
+      become_user: postgres
+      when: demo_db.stdout | trim != "1"
+
+    - name: Check imported demo data
+      ansible.builtin.command:
+        argv:
+          - "{{ postgresql_bin_dir }}/psql"
+          - -d
+          - "{{ demo_database }}"
+          - -Atc
+          - "SELECT to_regclass('bookings.flights') IS NOT NULL;"
+      become_user: postgres
+      register: demo_data
+      changed_when: false
+
+    - name: Verify that demo data is imported
+      ansible.builtin.assert:
+        that:
+          - demo_data.stdout | trim == "t"
+        fail_msg: >-
+          База создана, но демонстрационные данные не импортированы.
+          Сначала загрузите dump базы bookings.
+
+    - name: Grant access to demo database
+      ansible.builtin.command:
+        argv:
+          - "{{ postgresql_bin_dir }}/psql"
+          - -d
+          - "{{ demo_database }}"
+          - -v
+          - ON_ERROR_STOP=1
+        stdin: |
+          GRANT ALL PRIVILEGES
+          ON DATABASE {{ demo_database }}
+          TO {{ demo_user }};
+
+          GRANT ALL PRIVILEGES
+          ON SCHEMA bookings
+          TO {{ demo_user }};
+
+          GRANT ALL PRIVILEGES
+          ON ALL TABLES IN SCHEMA bookings
+          TO {{ demo_user }};
+
+          GRANT ALL PRIVILEGES
+          ON ALL SEQUENCES IN SCHEMA bookings
+          TO {{ demo_user }};
+
+          ALTER DEFAULT PRIVILEGES
+          FOR ROLE postgres IN SCHEMA bookings
+          GRANT ALL PRIVILEGES ON TABLES TO {{ demo_user }};
+
+          SET ROLE {{ demo_user }};
+          SELECT count(*) FROM bookings.flights;
+      become_user: postgres
+      changed_when: false

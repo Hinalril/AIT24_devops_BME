@@ -1,0 +1,112 @@
+---
+
+all:
+  hosts:
+    ol8_pg01:
+      ansible_host: 192.168.77.11
+      system_hostname: ol8-pg01.devops.test
+      storage_disk: /dev/disk/by-id/wwn-0x600224803c5f39a1639cbe8129c5e1de
+      initial_postgresql_role: primary
+      system_vg: ol_ol8-pg01
+      system_root_lv: root
+      storage_first_partition_end: 25GiB
+
+    ol8_pg02:
+      ansible_host: 192.168.77.12
+      system_hostname: ol8-pg02.devops.test
+      storage_disk: /dev/disk/by-id/wwn-0x6002248046aa207f51b1792978745581
+      initial_postgresql_role: synchronous_standby
+      replication_slot: pg02_slot
+      replication_application_name: ol8_pg02
+      replication_mode: synchronous
+
+    ol8_pg03:
+      ansible_host: 192.168.77.13
+      system_hostname: ol8-pg03.devops.test
+      storage_disk: /dev/disk/by-id/wwn-0x6002248072c9d47e7404e7e122cca73e
+      initial_postgresql_role: asynchronous_standby
+      replication_slot: pg03_slot
+      replication_application_name: ol8_pg03
+      replication_mode: asynchronous
+
+    ol8_backup01:
+      ansible_host: 192.168.77.20
+      system_hostname: ol8-backup01.devops.test
+      storage_disk: /dev/disk/by-id/wwn-0x6002248086d2959c5a32fec309fd2a0f
+
+  children:
+    postgresql:
+      hosts:
+        ol8_pg01: {}
+
+    postgresql_cluster:
+      hosts:
+        ol8_pg01: {}
+        ol8_pg02: {}
+        ol8_pg03: {}
+      vars:
+        storage_vg: vg_postgres
+        storage_lv: lv_pgdata
+        storage_lv_size: 20g
+        storage_mount: /var/lib/pgsql
+
+        postgresql_primary_host: ol8_pg01
+        replication_user: replicator
+        replication_max_wal_senders: 10
+        replication_max_slots: 10
+        replication_wal_keep_size: 512MB
+        replication_auth_method: scram-sha-256
+        synchronous_standby_names: "FIRST 1 (ol8_pg02)"
+
+        oracle_epel_release_package: oracle-epel-release-el8
+        oracle_epel_repository: ol8_developer_EPEL
+        postgresql_module_stream: "postgresql:{{ postgresql_version }}"
+        postgresql_packages:
+          - postgresql-server
+          - postgresql-contrib
+
+        postgresql_data_dir: "{{ storage_mount }}/data"
+        postgresql_service_name: postgresql
+        postgresql_bin_dir: /usr/bin
+        postgresql_listen_addresses: "*"
+        postgresql_password_encryption: scram-sha-256
+
+    postgresql_replicas:
+      hosts:
+        ol8_pg02: {}
+        ol8_pg03: {}
+
+    backup_servers:
+      hosts:
+        ol8_backup01: {}
+      vars:
+        storage_vg: vg_backup
+        storage_lv: lv_backup
+        storage_lv_size: 25g
+        storage_mount: /var/backups/postgresql
+
+    stage2_storage:
+      hosts:
+        ol8_pg02: {}
+        ol8_pg03: {}
+        ol8_backup01: {}
+
+  vars:
+    ansible_user: ansible
+    ansible_python_interpreter: /usr/bin/python3.12
+    ansible_ssh_private_key_file: "{{ lookup('env', 'HOME') }}/.ssh/academy_ansible_ed25519"
+    dba_public_key_file: "{{ lookup('env', 'HOME') }}/.ssh/academy_ansible_ed25519.pub"
+    dba_user: dba
+
+    lab_network: 192.168.77.0/24
+    lab_gateway: 192.168.77.1
+    lab_dns:
+      - 1.1.1.1
+      - 8.8.8.8
+
+    postgresql_version: 15
+    postgresql_port: 5432
+    postgresql_vip: 192.168.77.10
+
+    storage_fstype: xfs
+    storage_mount_options: defaults,noatime

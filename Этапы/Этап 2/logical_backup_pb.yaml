@@ -1,0 +1,264 @@
+---
+
+- name: Configure PostgreSQL for logical backups
+  hosts: postgresql
+  become: true
+  gather_facts: false
+
+  vars_files:
+  - ../vars/vault.yaml
+
+  vars:
+    backup_logical_user: backup_logical
+    backup_logical_database: demo
+    backup_server_ip: "{{ hostvars[groups['backup_servers'][0]].ansible_host }}"
+
+  tasks:
+    - name: Validate logical backup variables
+      ansible.builtin.assert:
+        that:
+          - vault_backup_logical_password is defined
+          - vault_backup_logical_password | length >= 20
+          - groups['backup_servers'] | length == 1
+          - postgresql_data_dir is defined
+          - postgresql_service_name is defined
+
+    - name: Check logical backup role
+      ansible.builtin.command:
+        argv:
+          - "{{ postgresql_bin_dir }}/psql"
+          - -d
+          - postgres
+          - -tAc
+          - "SELECT 1 FROM pg_roles WHERE rolname = '{{ backup_logical_user }}';"
+      become_user: postgres
+      register: backup_role_exists
+      changed_when: false
+
+    - name: Create logical backup role
+      ansible.builtin.command:
+        argv:
+          - "{{ postgresql_bin_dir }}/psql"
+          - -d
+          - postgres
+          - -v
+          - ON_ERROR_STOP=1
+          - -c
+          - >-
+            CREATE ROLE {{ backup_logical_user }}
+            LOGIN PASSWORD '{{ vault_backup_logical_password }}';
+      become_user: postgres
+      no_log: true
+      when: backup_role_exists.stdout | trim != "1"
+
+    - name: Grant read-only backup privileges
+      ansible.builtin.command:
+        argv:
+          - "{{ postgresql_bin_dir }}/psql"
+          - -d
+          - "{{ backup_logical_database }}"
+          - -v
+          - ON_ERROR_STOP=1
+          - -c
+          - "GRANT pg_read_all_data TO {{ backup_logical_user }};"
+      become_user: postgres
+      changed_when: false
+
+    - name: Configure pg_hba rules for logical backup role
+      ansible.builtin.blockinfile:
+        path: "{{ postgresql_data_dir }}/pg_hba.conf"
+        marker: "# {mark} ANSIBLE MANAGED LOGICAL BACKUP"
+        insertbefore: '^host\s+all\s+all\s+'
+        block: |
+          host    {{ backup_logical_database }}    {{ backup_logical_user }}    {{ backup_server_ip }}/32    scram-sha-256
+          host    all    {{ backup_logical_user }}    0.0.0.0/0    reject
+          host    all    {{ backup_logical_user }}    ::/0    reject
+      notify: Reload PostgreSQL
+
+    - name: Flush PostgreSQL handler
+      ansible.builtin.meta: flush_handlers
+
+    - name: Verify pg_hba configuration
+      ansible.builtin.command:
+        argv:
+          - "{{ postgresql_bin_dir }}/psql"
+          - -d
+          - postgres
+          - -tAc
+          - "SELECT count(*) FROM pg_hba_file_rules WHERE error IS NOT NULL;"
+      become_user: postgres
+      register: pg_hba_errors
+      changed_when: false
+
+    - name: Assert valid pg_hba configuration
+      ansible.builtin.assert:
+        that:
+          - pg_hba_errors.stdout | trim | int == 0
+        fail_msg: PostgreSQL detected errors in pg_hba.conf.
+
+  handlers:
+    - name: Reload PostgreSQL
+      ansible.builtin.service:
+        name: "{{ postgresql_service_name }}"
+        state: reloaded
+
+
+- name: Configure scheduled logical backups
+  hosts: backup_servers
+  become: true
+  gather_facts: false
+
+  vars_files:
+    - vars/vault.yaml
+
+  vars:
+    backup_logical_user: backup_logical
+    backup_logical_database: demo
+    backup_os_user: pgbackup
+    backup_os_home: /var/lib/pgbackup
+    backup_root: /var/backups/postgresql
+    backup_logical_dir: "{{ backup_root }}/logical"
+    backup_log_dir: "{{ backup_root }}/logs"
+    backup_retention_days: 7
+    backup_timezone: Asia/Krasnoyarsk
+    primary_ip: "{{ hostvars[groups['postgresql'][0]].ansible_host }}"
+    backup_script: /usr/local/sbin/backup_demo_logical.sh
+
+  tasks:
+    - name: Validate backup server variables
+      ansible.builtin.assert:
+        that:
+          - vault_backup_logical_password is defined
+          - vault_backup_logical_password | length >= 20
+          - groups['postgresql'] | length == 1
+          - postgresql_version is defined
+          - postgresql_port is defined
+
+    - name: Configure backup server timezone
+      community.general.timezone:
+        name: "{{ backup_timezone }}"
+
+    - name: Enable PostgreSQL module
+      ansible.builtin.command:
+        argv:
+          - dnf
+          - module
+          - enable
+          - -y
+          - "postgresql:{{ postgresql_version }}"
+      register: postgresql_module_result
+      changed_when: "'Nothing to do' not in postgresql_module_result.stdout"
+
+    - name: Install PostgreSQL client and cron
+      ansible.builtin.command:
+        argv:
+          - dnf
+          - install
+          - -y
+          - postgresql
+          - cronie
+      register: backup_packages
+      changed_when: "'Nothing to do' not in backup_packages.stdout"
+
+    - name: Create backup operating system user
+      ansible.builtin.user:
+        name: "{{ backup_os_user }}"
+        home: "{{ backup_os_home }}"
+        create_home: true
+        shell: /sbin/nologin
+        system: true
+
+    - name: Create logical backup directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ backup_os_user }}"
+        group: "{{ backup_os_user }}"
+        mode: "0750"
+      loop:
+        - "{{ backup_logical_dir }}"
+        - "{{ backup_log_dir }}"
+
+    - name: Create PostgreSQL password file
+      ansible.builtin.copy:
+        dest: "{{ backup_os_home }}/.pgpass"
+        content: >-
+          {{ primary_ip }}:{{ postgresql_port }}:{{ backup_logical_database }}:{{ backup_logical_user }}:{{ vault_backup_logical_password }}
+        owner: "{{ backup_os_user }}"
+        group: "{{ backup_os_user }}"
+        mode: "0600"
+      no_log: true
+
+    - name: Install logical backup script
+      ansible.builtin.copy:
+        dest: "{{ backup_script }}"
+        owner: root
+        group: "{{ backup_os_user }}"
+        mode: "0750"
+        content: |
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+          umask 077
+
+          BACKUP_DIR="{{ backup_logical_dir }}"
+          TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
+          FINAL_FILE="${BACKUP_DIR}/demo_${TIMESTAMP}.dump"
+          TEMP_FILE="$(mktemp "${BACKUP_DIR}/.demo_${TIMESTAMP}.XXXXXX.dump")"
+
+          cleanup() {
+              rm -f "${TEMP_FILE}"
+          }
+          trap cleanup EXIT
+
+          export PGPASSFILE="{{ backup_os_home }}/.pgpass"
+
+          /usr/bin/pg_dump \
+              --host="{{ primary_ip }}" \
+              --port="{{ postgresql_port }}" \
+              --username="{{ backup_logical_user }}" \
+              --dbname="{{ backup_logical_database }}" \
+              --format=custom \
+              --file="${TEMP_FILE}"
+
+          /usr/bin/pg_restore --list "${TEMP_FILE}" >/dev/null
+          mv "${TEMP_FILE}" "${FINAL_FILE}"
+          sha256sum "${FINAL_FILE}" > "${FINAL_FILE}.sha256"
+
+          find "${BACKUP_DIR}" -maxdepth 1 -type f \
+              \( -name 'demo_*.dump' -o -name 'demo_*.dump.sha256' \) \
+              -mtime +{{ backup_retention_days }} -delete
+
+          echo "Logical backup completed: ${FINAL_FILE}"
+
+    - name: Enable and start cron service
+      ansible.builtin.service:
+        name: crond
+        enabled: true
+        state: started
+
+    - name: Schedule daily logical backup
+      ansible.builtin.cron:
+        name: PostgreSQL demo logical backup
+        user: "{{ backup_os_user }}"
+        minute: "0"
+        hour: "1"
+        job: >-
+          /usr/bin/flock -n {{ backup_os_home }}/logical_backup.lock
+          {{ backup_script }} >> {{ backup_log_dir }}/logical_backup.log 2>&1
+        state: present
+
+    - name: Read installed pg_dump version
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/pg_dump
+          - --version
+      register: pg_dump_version
+      changed_when: false
+
+    - name: Show logical backup configuration
+      ansible.builtin.debug:
+        msg:
+          - "{{ pg_dump_version.stdout }}"
+          - "Backup directory: {{ backup_logical_dir }}"
+          - "Schedule: daily at 01:00"
+          - "Retention: {{ backup_retention_days }} days"

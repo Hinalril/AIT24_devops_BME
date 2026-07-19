@@ -1,0 +1,221 @@
+---
+
+- name: Validate PostgreSQL for physical backups
+  hosts: postgresql
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Read physical backup settings
+      ansible.builtin.command:
+        argv:
+          - "{{ postgresql_bin_dir }}/psql"
+          - -d
+          - postgres
+          - -tAc
+          - >-
+            SELECT current_setting('wal_level') || '|' ||
+                   current_setting('max_wal_senders') || '|' ||
+                   current_setting('max_replication_slots');
+      become_user: postgres
+      register: physical_backup_settings
+      changed_when: false
+
+    - name: Verify physical backup settings
+      ansible.builtin.assert:
+        that:
+          - physical_backup_settings.stdout.split('|')[0] == 'replica'
+          - physical_backup_settings.stdout.split('|')[1] | int >= 4
+          - physical_backup_settings.stdout.split('|')[2] | int >= 2
+        fail_msg: PostgreSQL is not ready for physical backups.
+
+    - name: Count custom tablespaces
+      ansible.builtin.command:
+        argv:
+          - "{{ postgresql_bin_dir }}/psql"
+          - -d
+          - postgres
+          - -tAc
+          - >-
+            SELECT count(*) FROM pg_tablespace
+            WHERE spcname NOT IN ('pg_default', 'pg_global');
+      become_user: postgres
+      register: custom_tablespace_count
+      changed_when: false
+
+    - name: Verify that custom tablespaces are absent
+      ansible.builtin.assert:
+        that:
+          - custom_tablespace_count.stdout | trim | int == 0
+        fail_msg: >-
+          Custom tablespaces require explicit tablespace mapping
+          before a plain-format physical backup can be used.
+
+
+- name: Configure scheduled physical backups
+  hosts: backup_servers
+  become: true
+  gather_facts: false
+
+  vars_files:
+  - ../vars/vault.yaml
+
+  vars:
+    backup_os_user: pgbackup
+    backup_os_home: /var/lib/pgbackup
+    backup_root: /var/backups/postgresql
+    backup_physical_dir: "{{ backup_root }}/physical"
+    backup_log_dir: "{{ backup_root }}/logs"
+    backup_physical_script: /usr/local/sbin/backup_postgresql_physical.sh
+    backup_physical_retention_days: 14
+    primary_ip: "{{ hostvars[groups['postgresql'][0]].ansible_host }}"
+    physical_backup_user: >-
+      {{ hostvars[groups['postgresql'][0]].replication_user }}
+    physical_passfile: "{{ backup_os_home }}/.pgpass_physical"
+
+  tasks:
+    - name: Validate physical backup variables
+      ansible.builtin.assert:
+        that:
+          - vault_replication_password is defined
+          - vault_replication_password | length > 0
+          - physical_backup_user | length > 0
+          - postgresql_version is defined
+          - postgresql_port is defined
+          - groups['postgresql'] | length == 1
+
+    - name: Install physical backup utilities
+      ansible.builtin.command:
+        argv:
+          - dnf
+          - install
+          - -y
+          - postgresql-server
+          - postgresql-contrib
+          - cronie
+      register: physical_backup_packages
+      changed_when: "'Nothing to do' not in physical_backup_packages.stdout"
+
+    - name: Ensure backup operating system user exists
+      ansible.builtin.user:
+        name: "{{ backup_os_user }}"
+        home: "{{ backup_os_home }}"
+        create_home: true
+        shell: /sbin/nologin
+        system: true
+
+    - name: Create Ansible temporary directory for backup user
+      ansible.builtin.file:
+        path: "{{ backup_os_home }}/.ansible/tmp"
+        state: directory
+        owner: "{{ backup_os_user }}"
+        group: "{{ backup_os_user }}"
+        mode: "0700"
+
+    - name: Create physical backup directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ backup_os_user }}"
+        group: "{{ backup_os_user }}"
+        mode: "0750"
+      loop:
+        - "{{ backup_physical_dir }}"
+        - "{{ backup_log_dir }}"
+
+    - name: Create physical backup password file
+      ansible.builtin.copy:
+        dest: "{{ physical_passfile }}"
+        content: >-
+          {{ primary_ip }}:{{ postgresql_port }}:*:{{ physical_backup_user }}:{{ vault_replication_password }}
+        owner: "{{ backup_os_user }}"
+        group: "{{ backup_os_user }}"
+        mode: "0600"
+      no_log: true
+
+    - name: Install physical backup script
+      ansible.builtin.copy:
+        dest: "{{ backup_physical_script }}"
+        owner: root
+        group: "{{ backup_os_user }}"
+        mode: "0750"
+        content: |
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+          umask 077
+
+          BACKUP_ROOT="{{ backup_physical_dir }}"
+          TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
+          FINAL_DIR="${BACKUP_ROOT}/base_${TIMESTAMP}"
+          TEMP_DIR="$(mktemp -d "${BACKUP_ROOT}/.base_${TIMESTAMP}.XXXXXX")"
+
+          cleanup() {
+              rm -rf -- "${TEMP_DIR}"
+          }
+          trap cleanup EXIT
+
+          export PGPASSFILE="{{ physical_passfile }}"
+
+          /usr/bin/pg_basebackup \
+              --host="{{ primary_ip }}" \
+              --port="{{ postgresql_port }}" \
+              --username="{{ physical_backup_user }}" \
+              --pgdata="${TEMP_DIR}" \
+              --format=plain \
+              --wal-method=stream \
+              --checkpoint=fast \
+              --manifest-checksums=SHA256 \
+              --progress \
+              --verbose \
+              --no-password
+
+          /usr/bin/pg_verifybackup --exit-on-error "${TEMP_DIR}"
+
+          (
+              cd "${TEMP_DIR}"
+              find . -type f ! -name SHA256SUMS -print0 \
+                  | sort -z \
+                  | xargs -0 sha256sum > SHA256SUMS
+          )
+
+          mv "${TEMP_DIR}" "${FINAL_DIR}"
+
+          find "${BACKUP_ROOT}" -mindepth 1 -maxdepth 1 -type d \
+              -name 'base_*' -mtime +{{ backup_physical_retention_days }} \
+              -exec rm -rf -- {} +
+
+          echo "Physical backup completed: ${FINAL_DIR}"
+
+    - name: Schedule weekly physical backup
+      ansible.builtin.cron:
+        name: PostgreSQL physical backup
+        user: "{{ backup_os_user }}"
+        minute: "0"
+        hour: "2"
+        weekday: "0"
+        job: >-
+          /usr/bin/flock -n {{ backup_os_home }}/physical_backup.lock
+          {{ backup_physical_script }} >>
+          {{ backup_log_dir }}/physical_backup.log 2>&1
+        state: present
+
+    - name: Enable and start cron service
+      ansible.builtin.service:
+        name: crond
+        enabled: true
+        state: started
+
+    - name: Read installed physical backup utility versions
+      ansible.builtin.shell: >-
+        /usr/bin/pg_basebackup --version &&
+        /usr/bin/pg_verifybackup --version
+      register: physical_backup_versions
+      changed_when: false
+
+    - name: Show physical backup configuration
+      ansible.builtin.debug:
+        msg:
+          - "{{ physical_backup_versions.stdout_lines }}"
+          - "Backup directory: {{ backup_physical_dir }}"
+          - "Schedule: every Sunday at 02:00"
+          - "Retention: {{ backup_physical_retention_days }} days"

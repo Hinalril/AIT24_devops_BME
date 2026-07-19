@@ -1,0 +1,7 @@
+# Перенести эти параметры в штатный /etc/zabbix/zabbix_agent2.conf.
+# NODE_NAME заменить на ol8_pg01, ol8_pg02, ol8_pg03 или ol8_backup01.
+
+Server=192.168.77.20
+ServerActive=192.168.77.20
+Hostname=NODE_NAME
+ListenPort=10050

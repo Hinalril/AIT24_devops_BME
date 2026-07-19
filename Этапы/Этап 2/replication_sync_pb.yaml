@@ -1,0 +1,110 @@
+---
+
+- name: Configure synchronous and asynchronous replication
+  hosts: postgresql
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Validate synchronous replication variables
+      ansible.builtin.assert:
+        that:
+          - synchronous_standby_names is defined
+          - groups['postgresql_replicas'] | length == 2
+        fail_msg: Synchronous replication variables are missing.
+
+    - name: Read connected streaming replicas
+      ansible.builtin.command:
+        argv:
+          - "{{ postgresql_bin_dir }}/psql"
+          - -tAc
+          - >-
+            SELECT application_name
+            FROM pg_stat_replication
+            WHERE state = 'streaming'
+            ORDER BY application_name;
+      become_user: postgres
+      register: connected_replications
+      changed_when: false
+
+    - name: Verify each replica is streaming before enabling sync mode
+      ansible.builtin.assert:
+        that:
+          - >-
+            hostvars[item].replication_application_name
+            in connected_replications.stdout_lines
+        fail_msg: >-
+          {{ item }} is not streaming. Synchronous mode
+          will not be enabled.
+      loop: "{{ groups['postgresql_replicas'] }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Configure synchronous standby names
+      ansible.builtin.lineinfile:
+        path: "{{ postgresql_data_dir }}/postgresql.conf"
+        regexp: '^#?synchronous_standby_names\s*='
+        line: >-
+          synchronous_standby_names = '{{ synchronous_standby_names }}'
+      notify: Reload PostgreSQL
+
+    - name: Enable synchronous commit
+      ansible.builtin.lineinfile:
+        path: "{{ postgresql_data_dir }}/postgresql.conf"
+        regexp: '^#?synchronous_commit\s*='
+        line: "synchronous_commit = on"
+      notify: Reload PostgreSQL
+
+    - name: Apply synchronous replication configuration
+      ansible.builtin.meta: flush_handlers
+
+    - name: Wait for expected synchronization states
+      ansible.builtin.command:
+        argv:
+          - "{{ postgresql_bin_dir }}/psql"
+          - -tAc
+          - >-
+            SELECT sync_state
+            FROM pg_stat_replication
+            WHERE application_name =
+            '{{ hostvars[item].replication_application_name }}'
+            AND state = 'streaming';
+      become_user: postgres
+      register: replica_sync_state
+      until: >-
+        replica_sync_state.stdout | trim ==
+        ('sync'
+         if hostvars[item].replication_mode == 'synchronous'
+         else 'async')
+      retries: 10
+      delay: 2
+      changed_when: false
+      loop: "{{ groups['postgresql_replicas'] }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Read final replication state
+      ansible.builtin.command:
+        argv:
+          - "{{ postgresql_bin_dir }}/psql"
+          - -tAc
+          - >-
+            SELECT application_name || ':' ||
+                   client_addr || ':' ||
+                   state || ':' ||
+                   sync_state
+            FROM pg_stat_replication
+            ORDER BY application_name;
+      become_user: postgres
+      register: final_replication_state
+      changed_when: false
+
+    - name: Show final replication state
+      ansible.builtin.debug:
+        var: final_replication_state.stdout_lines
+
+  handlers:
+    - name: Reload PostgreSQL
+      ansible.builtin.service:
+        name: "{{ postgresql_service_name }}"
+        state: reloaded

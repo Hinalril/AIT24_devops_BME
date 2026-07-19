@@ -1,0 +1,159 @@
+---
+
+- name: Configure data storage for stage 2
+  hosts: stage2_storage
+  become: true
+  gather_facts: false
+
+  vars:
+    storage_partition: "{{ storage_disk }}-part1"
+
+  tasks:
+    - name: Validate required storage variables
+      ansible.builtin.assert:
+        that:
+          - storage_disk is defined
+          - storage_vg is defined
+          - storage_lv is defined
+          - storage_lv_size is defined
+          - storage_mount is defined
+          - storage_fstype is defined
+          - storage_mount_options is defined
+        fail_msg: >-
+          Required storage variables are missing for
+          {{ inventory_hostname }}.
+
+    - name: Install storage utilities
+      ansible.builtin.command:
+        argv:
+          - dnf
+          - install
+          - -y
+          - lvm2
+          - xfsprogs
+          - parted
+      register: storage_packages
+      changed_when: "'Nothing to do.' not in storage_packages.stdout"
+
+    - name: Check storage disk
+      ansible.builtin.stat:
+        path: "{{ storage_disk }}"
+      register: storage_disk_stat
+
+    - name: Verify that storage disk exists
+      ansible.builtin.assert:
+        that:
+          - storage_disk_stat.stat.exists
+        fail_msg: >-
+          Storage disk {{ storage_disk }} does not exist
+          on {{ inventory_hostname }}.
+
+    - name: Read mount points from storage disk
+      ansible.builtin.command:
+        argv:
+          - lsblk
+          - -nro
+          - MOUNTPOINT
+          - "{{ storage_disk }}"
+      register: storage_disk_mounts
+      changed_when: false
+
+    - name: Verify that storage disk is not a system disk
+      ansible.builtin.assert:
+        that:
+          - "'/' not in storage_disk_mounts.stdout_lines"
+          - "'/boot' not in storage_disk_mounts.stdout_lines"
+          - "'/boot/efi' not in storage_disk_mounts.stdout_lines"
+          - "'[SWAP]' not in storage_disk_mounts.stdout_lines"
+        fail_msg: >-
+          The selected disk contains system mount points.
+          Refusing to modify {{ storage_disk }} on
+          {{ inventory_hostname }}.
+
+    - name: Create LVM partition
+      community.general.parted:
+        device: "{{ storage_disk }}"
+        label: gpt
+        number: 1
+        part_start: 1MiB
+        part_end: 100%
+        flags:
+          - lvm
+        state: present
+
+    - name: Wait for storage partition
+      ansible.builtin.wait_for:
+        path: "{{ storage_partition }}"
+        timeout: 30
+
+    - name: Create volume group
+      community.general.lvg:
+        vg: "{{ storage_vg }}"
+        pvs: "{{ storage_partition }}"
+        state: present
+
+    - name: Create logical volume
+      community.general.lvol:
+        vg: "{{ storage_vg }}"
+        lv: "{{ storage_lv }}"
+        size: "{{ storage_lv_size }}"
+        state: present
+
+    - name: Create filesystem
+      community.general.filesystem:
+        dev: "/dev/{{ storage_vg }}/{{ storage_lv }}"
+        fstype: "{{ storage_fstype }}"
+
+    - name: Create mount point
+      ansible.builtin.file:
+        path: "{{ storage_mount }}"
+        state: directory
+
+    - name: Mount logical volume
+      ansible.posix.mount:
+        path: "{{ storage_mount }}"
+        src: "/dev/{{ storage_vg }}/{{ storage_lv }}"
+        fstype: "{{ storage_fstype }}"
+        opts: "{{ storage_mount_options }}"
+        state: mounted
+
+    - name: Read block device layout
+      ansible.builtin.command:
+        argv:
+          - lsblk
+          - -o
+          - NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT
+      register: block_layout
+      changed_when: false
+
+    - name: Read volume group
+      ansible.builtin.command:
+        argv:
+          - vgs
+          - "{{ storage_vg }}"
+      register: volume_group_result
+      changed_when: false
+
+    - name: Read logical volume
+      ansible.builtin.command:
+        argv:
+          - lvs
+          - "/dev/{{ storage_vg }}/{{ storage_lv }}"
+      register: logical_volume_result
+      changed_when: false
+
+    - name: Read mounted filesystem
+      ansible.builtin.command:
+        argv:
+          - findmnt
+          - "{{ storage_mount }}"
+      register: mount_result
+      changed_when: false
+
+    - name: Show storage verification
+      ansible.builtin.debug:
+        msg:
+          - "{{ block_layout.stdout_lines }}"
+          - "{{ volume_group_result.stdout_lines }}"
+          - "{{ logical_volume_result.stdout_lines }}"
+          - "{{ mount_result.stdout_lines }}"

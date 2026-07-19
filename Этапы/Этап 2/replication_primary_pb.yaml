@@ -1,0 +1,193 @@
+---
+
+- name: Prepare PostgreSQL primary for streaming replication
+  hosts: postgresql
+  become: true
+  gather_facts: false
+
+  vars_files:
+  - ../vars/vault.yaml
+
+  vars:
+    replication_settings:
+      - name: wal_level
+        regexp: '^#?wal_level\s*='
+        line: "wal_level = replica"
+
+      - name: max_wal_senders
+        regexp: '^#?max_wal_senders\s*='
+        line: "max_wal_senders = {{ replication_max_wal_senders }}"
+
+      - name: max_replication_slots
+        regexp: '^#?max_replication_slots\s*='
+        line: "max_replication_slots = {{ replication_max_slots }}"
+
+      - name: wal_keep_size
+        regexp: '^#?wal_keep_size\s*='
+        line: "wal_keep_size = '{{ replication_wal_keep_size }}'"
+
+      - name: hot_standby
+        regexp: '^#?hot_standby\s*='
+        line: "hot_standby = on"
+
+      - name: full_page_writes
+        regexp: '^#?full_page_writes\s*='
+        line: "full_page_writes = on"
+
+      - name: wal_log_hints
+        regexp: '^#?wal_log_hints\s*='
+        line: "wal_log_hints = on"
+
+  tasks:
+    - name: Validate replication variables
+      ansible.builtin.assert:
+        that:
+          - postgresql_data_dir is defined
+          - postgresql_service_name is defined
+          - postgresql_bin_dir is defined
+          - postgresql_port is defined
+          - lab_network is defined
+          - replication_user is defined
+          - replication_auth_method is defined
+          - replication_max_wal_senders is defined
+          - replication_max_slots is defined
+          - replication_wal_keep_size is defined
+          - vault_replication_password is defined
+          - groups['postgresql_replicas'] | length == 2
+        fail_msg: Required replication variables are missing.
+
+    - name: Validate replica variables
+      ansible.builtin.assert:
+        that:
+          - hostvars[item].replication_slot is defined
+          - hostvars[item].replication_application_name is defined
+          - hostvars[item].replication_mode is defined
+      loop: "{{ groups['postgresql_replicas'] }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Ensure PostgreSQL primary is running
+      ansible.builtin.service:
+        name: "{{ postgresql_service_name }}"
+        enabled: true
+        state: started
+
+    - name: Configure primary replication parameters
+      ansible.builtin.lineinfile:
+        path: "{{ postgresql_data_dir }}/postgresql.conf"
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      loop: "{{ replication_settings }}"
+      loop_control:
+        label: "{{ item.name }}"
+      notify: Restart PostgreSQL
+
+    - name: Allow replication connections
+      ansible.builtin.blockinfile:
+        path: "{{ postgresql_data_dir }}/pg_hba.conf"
+        marker: "# {mark} ANSIBLE STREAMING REPLICATION"
+        block: |
+          host    replication    {{ replication_user }}    {{ lab_network }}    {{ replication_auth_method }}
+      notify: Restart PostgreSQL
+
+    - name: Apply primary configuration
+      ansible.builtin.meta: flush_handlers
+
+    - name: Check replication role
+      ansible.builtin.command:
+        argv:
+          - "{{ postgresql_bin_dir }}/psql"
+          - -tAc
+          - "SELECT 1 FROM pg_roles WHERE rolname = '{{ replication_user }}';"
+      become_user: postgres
+      register: replication_role_exists
+      changed_when: false
+
+    - name: Create replication role
+      ansible.builtin.command:
+        argv:
+          - "{{ postgresql_bin_dir }}/psql"
+          - -v
+          - ON_ERROR_STOP=1
+          - -d
+          - postgres
+        stdin: >-
+          CREATE ROLE {{ replication_user }}
+          WITH LOGIN REPLICATION
+          PASSWORD '{{ vault_replication_password }}';
+      become_user: postgres
+      when: replication_role_exists.stdout | trim != "1"
+      no_log: true
+
+    - name: Read existing replication slots
+      ansible.builtin.command:
+        argv:
+          - "{{ postgresql_bin_dir }}/psql"
+          - -tAc
+          - "SELECT slot_name FROM pg_replication_slots WHERE slot_type = 'physical';"
+      become_user: postgres
+      register: existing_replication_slots
+      changed_when: false
+
+    - name: Create missing physical replication slots
+      ansible.builtin.command:
+        argv:
+          - "{{ postgresql_bin_dir }}/psql"
+          - -tAc
+          - >-
+            SELECT
+            (pg_create_physical_replication_slot(
+            '{{ hostvars[item].replication_slot }}')).slot_name;
+      become_user: postgres
+      loop: "{{ groups['postgresql_replicas'] }}"
+      loop_control:
+        label: "{{ hostvars[item].replication_slot }}"
+      when: >-
+        hostvars[item].replication_slot
+        not in existing_replication_slots.stdout_lines
+
+    - name: Read primary replication settings
+      ansible.builtin.command:
+        argv:
+          - "{{ postgresql_bin_dir }}/psql"
+          - -tAc
+          - >-
+            SELECT name || '=' || setting
+            FROM pg_settings
+            WHERE name IN
+            ('wal_level',
+             'max_wal_senders',
+             'max_replication_slots',
+             'wal_keep_size',
+             'hot_standby',
+             'full_page_writes',
+             'wal_log_hints')
+            ORDER BY name;
+      become_user: postgres
+      register: replication_settings_result
+      changed_when: false
+
+    - name: Read physical replication slots
+      ansible.builtin.command:
+        argv:
+          - "{{ postgresql_bin_dir }}/psql"
+          - -tAc
+          - >-
+            SELECT slot_name || ':' || slot_type || ':' || active
+            FROM pg_replication_slots
+            ORDER BY slot_name;
+      become_user: postgres
+      register: replication_slots_result
+      changed_when: false
+
+    - name: Show primary replication configuration
+      ansible.builtin.debug:
+        msg:
+          - "{{ replication_settings_result.stdout_lines }}"
+          - "{{ replication_slots_result.stdout_lines }}"
+
+  handlers:
+    - name: Restart PostgreSQL
+      ansible.builtin.service:
+        name: "{{ postgresql_service_name }}"
+        state: restarted

@@ -1,0 +1,141 @@
+---
+
+- name: Install system packages and PostgreSQL
+  hosts: postgresql_cluster
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Validate package variables
+      ansible.builtin.assert:
+        that:
+          - postgresql_version is defined
+          - postgresql_module_stream is defined
+          - postgresql_packages is defined
+          - oracle_epel_release_package is defined
+          - oracle_epel_repository is defined
+        fail_msg: >-
+          Required package variables are missing for
+          {{ inventory_hostname }}.
+
+    - name: Install Oracle EPEL repository configuration
+      ansible.builtin.command:
+        argv:
+          - dnf
+          - install
+          - -y
+          - "{{ oracle_epel_release_package }}"
+          - dnf-plugins-core
+      register: epel_install
+      changed_when: "'Nothing to do' not in epel_install.stdout"
+
+    - name: Read enabled repositories
+      ansible.builtin.command:
+        argv:
+          - dnf
+          - repolist
+          - --enabled
+      register: enabled_repositories
+      changed_when: false
+
+    - name: Enable Oracle Linux EPEL repository
+      ansible.builtin.command:
+        argv:
+          - dnf
+          - config-manager
+          - --set-enabled
+          - "{{ oracle_epel_repository }}"
+      when: oracle_epel_repository not in enabled_repositories.stdout
+
+    - name: Install system utilities
+      ansible.builtin.command:
+        cmd: >-
+          dnf install -y
+          --disablerepo={{ oracle_epel_repository }}
+          vim-enhanced
+          wget
+          telnet
+          mc
+          nmap-ncat
+          tcpdump
+          autofs
+          nfs-utils
+          curl
+          cloud-utils-growpart
+          net-tools
+          lsof
+          bind-utils
+          sysstat
+          unzip
+          bc
+          sg3_utils
+          sysfsutils
+          nano
+          git
+          glibc-langpack-ru
+      register: utilities_install
+      changed_when: "'Nothing to do' not in utilities_install.stdout"
+
+    - name: Install utilities from Oracle Linux EPEL
+      ansible.builtin.command:
+        cmd: >-
+          dnf install -y
+          --enablerepo={{ oracle_epel_repository }}
+          pwgen
+          screen
+      register: epel_utilities_install
+      changed_when: "'Nothing to do' not in epel_utilities_install.stdout"
+
+    - name: Enable PostgreSQL DNF module
+      ansible.builtin.command:
+        argv:
+          - dnf
+          - module
+          - enable
+          - -y
+          - "{{ postgresql_module_stream }}"
+      register: postgresql_module_result
+      changed_when: >-
+        'Nothing to do' not in postgresql_module_result.stdout
+
+    - name: Install PostgreSQL packages
+      ansible.builtin.command:
+        argv: "{{ ['dnf', 'install', '-y'] + postgresql_packages }}"
+      register: postgresql_install_result
+      changed_when: >-
+        'Nothing to do' not in postgresql_install_result.stdout
+
+    - name: Read PostgreSQL version
+      ansible.builtin.command:
+        argv:
+          - psql
+          - --version
+      register: postgresql_version_result
+      changed_when: false
+
+    - name: Verify PostgreSQL version
+      ansible.builtin.assert:
+        that:
+          - >-
+            ('PostgreSQL) ' ~ (postgresql_version | string))
+            in postgresql_version_result.stdout
+        fail_msg: >-
+          PostgreSQL {{ postgresql_version }} was not installed
+          on {{ inventory_hostname }}.
+
+    - name: Read enabled PostgreSQL module
+      ansible.builtin.command:
+        argv:
+          - dnf
+          - module
+          - list
+          - --enabled
+          - postgresql
+      register: enabled_postgresql_module
+      changed_when: false
+
+    - name: Show installation result
+      ansible.builtin.debug:
+        msg:
+          - "{{ postgresql_version_result.stdout }}"
+          - "{{ enabled_postgresql_module.stdout_lines }}"

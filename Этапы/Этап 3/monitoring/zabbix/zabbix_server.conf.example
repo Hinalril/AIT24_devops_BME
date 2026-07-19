@@ -1,0 +1,8 @@
+# Перенести эти параметры в штатный /etc/zabbix/zabbix_server.conf.
+# Файл является фрагментом, а не полной заменой конфигурации пакета.
+
+DBHost=127.0.0.1
+DBName=zabbix
+DBUser=zabbix
+DBPassword=CHANGE_ME
+ListenPort=10051
